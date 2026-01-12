@@ -96,6 +96,15 @@ exports.validateInventory = [
     .trim()
     .isLength({ max: 500 })
     .withMessage('Description cannot exceed 500 characters'),
+  // Explicitly reject stockStatus - it should always be calculated automatically
+  body('stockStatus')
+    .custom((value, { req }) => {
+      // If stockStatus is provided in the request, reject it
+      if (req.body.stockStatus !== undefined) {
+        throw new Error('Stock status cannot be set manually. It is calculated automatically based on quantity and reorder level.');
+      }
+      return true;
+    }),
   handleValidationErrors,
 ];
 

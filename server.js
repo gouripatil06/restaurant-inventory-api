@@ -4,6 +4,7 @@ const cors = require('cors');
 const connectDB = require('./config/database');
 const errorHandler = require('./middleware/errorHandler');
 const { apiLimiter } = require('./middleware/rateLimiter');
+const { metricsMiddleware, getMetrics, register } = require('./utils/metrics');
 
 // Import Routes
 const authRoutes = require('./routes/authRoutes');
@@ -19,6 +20,9 @@ connectDB();
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Metrics middleware (before routes)
+app.use(metricsMiddleware);
 
 // Request logging middleware (development)
 if (process.env.NODE_ENV === 'development') {
@@ -38,6 +42,17 @@ app.get('/health', (req, res) => {
     message: 'Server is running',
     timestamp: new Date().toISOString(),
   });
+});
+
+// Metrics endpoint for Prometheus
+app.get('/metrics', async (req, res) => {
+  try {
+    res.set('Content-Type', register.contentType);
+    const metrics = await getMetrics();
+    res.end(metrics);
+  } catch (error) {
+    res.status(500).end(error);
+  }
 });
 
 // API Routes

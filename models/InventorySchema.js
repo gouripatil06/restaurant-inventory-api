@@ -86,6 +86,8 @@ inventorySchema.virtual('needsReorder').get(function () {
 
 // Method to update stock status based on quantity
 inventorySchema.methods.updateStockStatus = function () {
+  // Always recalculate status based on current quantity and reorder level
+  // Do not trust any existing stockStatus value
   if (this.quantityAvailable === 0) {
     this.stockStatus = STOCK_STATUS.OUT_OF_STOCK;
   } else if (this.quantityAvailable <= this.reorderLevel) {
@@ -97,8 +99,11 @@ inventorySchema.methods.updateStockStatus = function () {
   return this;
 };
 
-// Pre-save hook to update stock status
+// Pre-save hook to ALWAYS update stock status before saving
+// This ensures status is always correct, even if manually set in the request
 inventorySchema.pre('save', function (next) {
+  // Force recalculation of stock status before every save
+  // This overrides any manual stockStatus value that might have been set
   this.updateStockStatus();
   next();
 });
@@ -116,6 +121,25 @@ inventorySchema.statics.findLowStock = function () {
 // Static method to find items by category
 inventorySchema.statics.findByCategory = function (category) {
   return this.find({ category });
+};
+
+// Static method to recalculate stock status for all items
+// Useful for fixing any existing items with incorrect status
+inventorySchema.statics.recalculateAllStockStatuses = async function () {
+  const items = await this.find({});
+  let updatedCount = 0;
+
+  for (const item of items) {
+    const oldStatus = item.stockStatus;
+    item.updateStockStatus();
+    
+    if (item.stockStatus !== oldStatus || item.isModified()) {
+      await item.save();
+      updatedCount++;
+    }
+  }
+
+  return { total: items.length, updated: updatedCount };
 };
 
 const Inventory = mongoose.model('Inventory', inventorySchema);

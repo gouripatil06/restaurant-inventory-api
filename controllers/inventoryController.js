@@ -104,6 +104,7 @@ exports.createInventoryItem = asyncHandler(async (req, res, next) => {
     supplier,
     costPerUnit,
     location,
+    stockStatus, // Allow in destructuring but don't use it
   } = req.body;
 
   // Check if item already exists
@@ -113,6 +114,7 @@ exports.createInventoryItem = asyncHandler(async (req, res, next) => {
   }
 
   // Create inventory item
+  // Note: stockStatus is NOT included - it will be calculated automatically by pre-save hook
   const item = await Inventory.create({
     itemName,
     category,
@@ -124,6 +126,7 @@ exports.createInventoryItem = asyncHandler(async (req, res, next) => {
     costPerUnit,
     location,
     lastUpdatedBy: req.user.id,
+    // stockStatus is intentionally omitted - will be auto-calculated
   });
 
   // Create history entry
@@ -150,7 +153,7 @@ exports.createInventoryItem = asyncHandler(async (req, res, next) => {
  */
 exports.updateInventoryItem = asyncHandler(async (req, res, next) => {
   const { id } = req.params;
-  const updateData = req.body;
+  const updateData = { ...req.body };
 
   const item = await Inventory.findById(id);
 
@@ -158,36 +161,56 @@ exports.updateInventoryItem = asyncHandler(async (req, res, next) => {
     return next(new AppError('Inventory item not found', 404));
   }
 
-  // Store old quantity for history
+  // Store old values for history
   const oldQuantity = item.quantityAvailable;
+  const oldReorderLevel = item.reorderLevel;
 
-  // Update item
+  // Remove stockStatus from updateData - it should ALWAYS be calculated automatically
+  // Also remove internal fields that shouldn't be updated manually
+  delete updateData.stockStatus;
+  delete updateData._id;
+  delete updateData.createdAt;
+  delete updateData.updatedAt;
+
+  // Update item fields
   Object.keys(updateData).forEach((key) => {
-    if (key !== 'quantityAvailable') {
+    if (key !== 'quantityAvailable' && key !== 'reorderLevel') {
       item[key] = updateData[key];
     }
   });
 
-  // Handle quantity update separately to trigger stock status update
+  // Handle quantity and reorderLevel updates
+  // These changes will trigger stock status recalculation via pre-save hook
   if (updateData.quantityAvailable !== undefined) {
     item.quantityAvailable = updateData.quantityAvailable;
   }
+  
+  if (updateData.reorderLevel !== undefined) {
+    item.reorderLevel = updateData.reorderLevel;
+  }
 
   item.lastUpdatedBy = req.user.id;
+  
+  // Explicitly recalculate stock status (pre-save hook will also do this, but being explicit)
   item.updateStockStatus();
+  
+  // Save will trigger pre-save hook which will recalculate status again (double safety)
   await item.save();
 
-  // Create history entry if quantity changed
-  if (updateData.quantityAvailable !== undefined && updateData.quantityAvailable !== oldQuantity) {
+  // Create history entry if quantity or reorderLevel changed
+  const quantityChanged = updateData.quantityAvailable !== undefined && updateData.quantityAvailable !== oldQuantity;
+  const reorderLevelChanged = updateData.reorderLevel !== undefined && updateData.reorderLevel !== oldReorderLevel;
+  
+  if (quantityChanged || reorderLevelChanged) {
     await InventoryHistory.create({
       inventoryItem: item._id,
       itemName: item.itemName,
-      transactionType: 'adjustment',
+      transactionType: quantityChanged ? 'adjustment' : 'update',
       quantityBefore: oldQuantity,
-      quantityChange: updateData.quantityAvailable - oldQuantity,
+      quantityChange: quantityChanged ? (updateData.quantityAvailable - oldQuantity) : 0,
       quantityAfter: item.quantityAvailable,
       unit: item.unit,
-      reason: updateData.reason || 'Manual adjustment',
+      reason: updateData.reason || (reorderLevelChanged ? 'Reorder level updated' : 'Manual adjustment'),
       performedBy: req.user.id,
       performedByName: req.user.name,
     });
